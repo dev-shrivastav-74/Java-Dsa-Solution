@@ -5,10 +5,15 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 jobs:
+
   compile:
-    name: Compile Java Solutions
+    name: Compile Java
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout code
@@ -20,7 +25,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Compile each Java solution
+      - name: Compile Java solutions
         shell: bash
         run: |
           set -e
@@ -28,20 +33,236 @@ jobs:
           mkdir -p build
 
           files=$(find . -name "*.java" \
+            -not -path "./.git/*" \
             -not -path "./build/*" \
-            -not -path "./.git/*")
+            -not -name "*Test.java")
 
           if [ -z "$files" ]; then
-            echo "❌ No Java files found."
+            echo "❌ No Java solution files found."
             exit 1
           fi
 
           for file in $files
           do
-            echo "Checking: $file"
-            rm -rf build/*
+            echo "Compiling: $file"
             javac -d build "$file"
             echo "✅ Passed: $file"
           done
 
-          echo "🎉 All Java solutions compiled successfully."
+
+  lint:
+    name: Java Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run Java Lint
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p build
+
+          files=$(find . -name "*.java" \
+            -not -path "./.git/*" \
+            -not -path "./build/*")
+
+          for file in $files
+          do
+            echo "Linting: $file"
+            javac -Xlint:all -Werror -d build "$file"
+            echo "✅ Lint passed: $file"
+          done
+
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run test cases
+        shell: bash
+        run: |
+          set -e
+
+          test_files=$(find . -name "*Test.java" \
+            -not -path "./.git/*")
+
+          if [ -z "$test_files" ]; then
+            echo "❌ No test files found."
+            exit 1
+          fi
+
+          for file in $test_files
+          do
+            echo "Running: $file"
+
+            directory=$(dirname "$file")
+            test_class=$(basename "$file" .java)
+
+            rm -rf build
+            mkdir -p build
+
+            solution_files=$(find "$directory" -maxdepth 1 -name "*.java" \
+              -not -name "*Test.java")
+
+            javac -d build $solution_files "$file"
+
+            java -cp build "$test_class"
+
+            echo "✅ Tests passed: $file"
+          done
+
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download JaCoCo
+        run: |
+          curl -L \
+            -o jacococli.jar \
+            https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.13/org.jacoco.cli-0.8.13-nodeps.jar
+
+          curl -L \
+            -o jacocoagent.jar \
+            https://repo1.maven.org/maven2/org/jacoco/org.jacoco.agent/0.8.13/org.jacoco.agent-0.8.13-runtime.jar
+
+      - name: Run tests with coverage
+        shell: bash
+        run: |
+          set -e
+
+          test_files=$(find . -name "*Test.java" \
+            -not -path "./.git/*")
+
+          if [ -z "$test_files" ]; then
+            echo "❌ No test files found."
+            exit 1
+          fi
+
+          mkdir -p coverage
+
+          for file in $test_files
+          do
+            directory=$(dirname "$file")
+            test_class=$(basename "$file" .java)
+
+            rm -rf build
+            mkdir -p build
+
+            solution_files=$(find "$directory" -maxdepth 1 -name "*.java" \
+              -not -name "*Test.java")
+
+            javac -d build $solution_files "$file"
+
+            java \
+              -javaagent:"$PWD/jacocoagent.jar=destfile=$PWD/coverage/jacoco.exec" \
+              -cp build \
+              "$test_class"
+          done
+
+          java -jar jacococli.jar report \
+            coverage/jacoco.exec \
+            --classfiles build \
+            --xml coverage/report.xml
+
+      - name: Check minimum coverage
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          import sys
+
+          minimum = 70.0
+
+          root = ET.parse("coverage/report.xml").getroot()
+
+          for counter in root.findall("counter"):
+              if counter.attrib["type"] == "LINE":
+                  missed = int(counter.attrib["missed"])
+                  covered = int(counter.attrib["covered"])
+                  total = missed + covered
+
+                  coverage = (covered / total) * 100 if total else 0
+
+                  print(f"Line coverage: {coverage:.2f}%")
+
+                  if coverage < minimum:
+                      print(f"❌ Coverage below {minimum}%")
+                      sys.exit(1)
+
+          print(f"✅ Coverage requirement passed.")
+          PY
+
+
+  format:
+    name: Java Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download Google Java Format
+        run: |
+          curl -L \
+            -o google-java-format.jar \
+            https://github.com/google/google-java-format/releases/download/v1.36.1/google-java-format-1.36.1-all-deps.jar
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -e
+
+          files=$(find . -name "*.java" \
+            -not -path "./.git/*")
+
+          for file in $files
+          do
+            echo "Formatting: $file"
+
+            java -jar google-java-format.jar \
+              --dry-run \
+              --set-exit-if-changed \
+              "$file"
+
+            echo "✅ Format passed: $file"
+          done
