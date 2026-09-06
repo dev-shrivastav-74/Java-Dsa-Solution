@@ -1,0 +1,47 @@
+name: Java DSA CI
+
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  compile:
+    name: Compile Java Solutions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Compile each Java solution
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p build
+
+          files=$(find . -name "*.java" \
+            -not -path "./build/*" \
+            -not -path "./.git/*")
+
+          if [ -z "$files" ]; then
+            echo "❌ No Java files found."
+            exit 1
+          fi
+
+          for file in $files
+          do
+            echo "Checking: $file"
+            rm -rf build/*
+            javac -d build "$file"
+            echo "✅ Passed: $file"
+          done
+
+          echo "🎉 All Java solutions compiled successfully."
