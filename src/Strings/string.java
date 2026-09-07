@@ -1,5 +1,3 @@
 package Strings;
 
-public class string {
-    
-}
+public class string {}
