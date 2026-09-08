@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
 
@@ -64,7 +65,9 @@ jobs:
           for file in $files
           do
             echo "Linting: $file"
+
             javac -Xlint:all -Werror -d build "$file"
+
             echo "✅ Lint passed: $file"
           done
 
@@ -97,6 +100,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -109,12 +114,16 @@ jobs:
         run: |
           mvn -B clean test jacoco:report
 
-      - name: Generate coverage table
+      - name: Generate coverage report
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 - <<'PY'
           import xml.etree.ElementTree as ET
           import os
+          import subprocess
 
           report = "target/site/jacoco/jacoco.xml"
 
@@ -124,20 +133,57 @@ jobs:
 
           root = ET.parse(report).getroot()
 
+          # ---------------------------------------------------------
+          # Get changed Java files
+          # ---------------------------------------------------------
+
+          base_sha = os.environ["BASE_SHA"]
+          head_sha = os.environ["HEAD_SHA"]
+
+          result = subprocess.run(
+              [
+                  "git",
+                  "diff",
+                  "--name-only",
+                  base_sha,
+                  head_sha,
+                  "--",
+                  "*.java"
+              ],
+              capture_output=True,
+              text=True,
+              check=True
+          )
+
+          changed_files = {
+              os.path.basename(file)
+              for file in result.stdout.splitlines()
+              if file.endswith(".java")
+          }
+
+          # ---------------------------------------------------------
+          # Read JaCoCo coverage
+          # ---------------------------------------------------------
+
           rows = []
+
           total_missed = 0
           total_covered = 0
 
+          changed_missed = 0
+          changed_covered = 0
+
           for package in root.findall("package"):
-              package_name = package.attrib.get("name", "")
 
               for cls in package.findall("class"):
+
                   class_name = cls.attrib.get("name", "")
                   file_name = class_name.split("/")[-1] + ".java"
 
                   line_counter = None
 
                   for counter in cls.findall("counter"):
+
                       if counter.attrib["type"] == "LINE":
                           line_counter = counter
                           break
@@ -149,60 +195,297 @@ jobs:
                   covered = int(line_counter.attrib["covered"])
                   total = missed + covered
 
-                  coverage = (covered / total * 100) if total else 0
+                  coverage = (
+                      covered / total * 100
+                      if total
+                      else 0
+                  )
 
                   total_missed += missed
                   total_covered += covered
 
+                  # Add changed-file coverage
+                  if file_name in changed_files:
+                      changed_missed += missed
+                      changed_covered += covered
+
                   rows.append(
-                      f"| `{file_name}` | {covered} | {total} | {coverage:.2f}% |"
+                      {
+                          "file": file_name,
+                          "covered": covered,
+                          "total": total,
+                          "coverage": coverage
+                      }
                   )
 
+          # ---------------------------------------------------------
+          # Calculate overall coverage
+          # ---------------------------------------------------------
+
           total_lines = total_missed + total_covered
-          total_coverage = (
+
+          overall_coverage = (
               total_covered / total_lines * 100
               if total_lines
               else 0
           )
 
-          print("")
-          print("## Test Coverage")
-          print("")
-          print("| File | Lines Covered | Total Lines | Coverage |")
-          print("|---|---:|---:|---:|")
+          # ---------------------------------------------------------
+          # Calculate changed-file coverage
+          # ---------------------------------------------------------
 
-          for row in rows:
-              print(row)
+          changed_lines = changed_missed + changed_covered
 
-          print(
-              f"| **Total** | **{total_covered}** | "
-              f"**{total_lines}** | **{total_coverage:.2f}%** |"
+          delta_coverage = (
+              changed_covered / changed_lines * 100
+              if changed_lines
+              else 100
           )
 
-          # GitHub Actions Summary
-          summary = os.environ["GITHUB_STEP_SUMMARY"]
+          # ---------------------------------------------------------
+          # Coverage thresholds
+          # ---------------------------------------------------------
 
-          with open(summary, "a", encoding="utf-8") as f:
-              f.write("## 📊 Test Coverage\n\n")
-              f.write("| File | Lines Covered | Total Lines | Coverage |\n")
-              f.write("|---|---:|---:|---:|\n")
+          DELTA_THRESHOLD = 60
+          OVERALL_THRESHOLD = 5
 
-              for row in rows:
-                  f.write(row + "\n")
+          delta_passed = delta_coverage >= DELTA_THRESHOLD
+          overall_passed = overall_coverage >= OVERALL_THRESHOLD
+
+          delta_status = "✅" if delta_passed else "❌"
+          overall_status = "✅" if overall_passed else "❌"
+
+          # ---------------------------------------------------------
+          # Generate Markdown report
+          # ---------------------------------------------------------
+
+          with open(
+              "coverage-report.md",
+              "w",
+              encoding="utf-8"
+          ) as f:
+
+              f.write("<!-- coverage-report -->\n")
+
+              f.write("## 📊 Coverage Report\n\n")
 
               f.write(
-                  f"| **Total** | **{total_covered}** | "
-                  f"**{total_lines}** | **{total_coverage:.2f}%** |\n"
+                  "| Metric | Coverage | Threshold | Status |\n"
+              )
+
+              f.write(
+                  "|---|---:|---:|:---:|\n"
+              )
+
+              f.write(
+                  f"| 📄 Delta Coverage (changed files) "
+                  f"| {delta_coverage:.2f}% "
+                  f"| {DELTA_THRESHOLD}% "
+                  f"| {delta_status} |\n"
+              )
+
+              f.write(
+                  f"| 📚 Overall Coverage (codebase) "
+                  f"| {overall_coverage:.2f}% "
+                  f"| {OVERALL_THRESHOLD}% "
+                  f"| {overall_status} |\n"
               )
 
               f.write("\n")
 
-              if total_coverage >= 70:
-                  f.write("✅ **Coverage requirement passed — minimum 70%.**\n")
+              # -----------------------------------------------------
+              # Changed files
+              # -----------------------------------------------------
+
+              f.write("<details>\n")
+              f.write("<summary>📁 Changed Files</summary>\n\n")
+
+              f.write(
+                  "| File | Lines Covered | Total Lines | Coverage |\n"
+              )
+
+              f.write(
+                  "|---|---:|---:|---:|\n"
+              )
+
+              changed_rows = [
+                  row
+                  for row in rows
+                  if row["file"] in changed_files
+              ]
+
+              if changed_rows:
+
+                  for row in changed_rows:
+
+                      f.write(
+                          f"| `{row['file']}` "
+                          f"| {row['covered']} "
+                          f"| {row['total']} "
+                          f"| {row['coverage']:.2f}% |\n"
+                      )
+
               else:
-                  f.write("❌ **Coverage requirement failed — minimum 70%.**\n")
-                  exit(1)
-          PY
+
+                  f.write(
+                      "| _No changed Java files detected_ | - | - | - |\n"
+                  )
+
+              f.write("</details>\n\n")
+
+              # -----------------------------------------------------
+              # Result
+              # -----------------------------------------------------
+
+              if delta_passed and overall_passed:
+
+                  f.write(
+                      "### ✅ Coverage requirements passed\n\n"
+                  )
+
+              else:
+
+                  f.write(
+                      "### ❌ Coverage requirements failed\n\n"
+                  )
+
+              f.write(
+                  f"- Delta coverage: **{delta_coverage:.2f}%** "
+                  f"(required: **{DELTA_THRESHOLD}%**)\n"
+              )
+
+              f.write(
+                  f"- Overall coverage: **{overall_coverage:.2f}%** "
+                  f"(required: **{OVERALL_THRESHOLD}%**)\n"
+              )
+
+              f.write("\n")
+
+              f.write(
+                  "[🔗 View Full Report]"
+                  "(https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              )
+
+          # ---------------------------------------------------------
+          # GitHub Actions Summary
+          # ---------------------------------------------------------
+
+          with open(
+              os.environ["GITHUB_STEP_SUMMARY"],
+              "a",
+              encoding="utf-8"
+          ) as summary:
+
+              with open(
+                  "coverage-report.md",
+                  "r",
+                  encoding="utf-8"
+              ) as report_file:
+
+                  summary.write(report_file.read())
+
+          # ---------------------------------------------------------
+          # Save values for next step
+          # ---------------------------------------------------------
+
+          with open(
+              os.environ["GITHUB_ENV"],
+              "a",
+              encoding="utf-8"
+          ) as env:
+
+              env.write(
+                  f"DELTA_COVERAGE={delta_coverage:.2f}\n"
+              )
+
+              env.write(
+                  f"OVERALL_COVERAGE={overall_coverage:.2f}\n"
+              )
+
+              env.write(
+                  f"DELTA_PASSED={'true' if delta_passed else 'false'}\n"
+              )
+
+              env.write(
+                  f"OVERALL_PASSED={'true' if overall_passed else 'false'}\n"
+              )
+
+
+      - name: Post Coverage Report to PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const body = fs.readFileSync(
+              'coverage-report.md',
+              'utf8'
+            );
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100
+              }
+            );
+
+            const existingComment = comments.find(comment =>
+              comment.user &&
+              comment.user.type === 'Bot' &&
+              comment.body &&
+              comment.body.includes('<!-- coverage-report -->')
+            );
+
+            if (existingComment) {
+
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body
+              });
+
+              console.log(
+                '✅ Coverage report comment updated.'
+              );
+
+            } else {
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+
+              console.log(
+                '✅ Coverage report comment created.'
+              );
+            }
+
+
+      - name: Enforce coverage threshold
+        shell: bash
+        run: |
+          if [ "$DELTA_PASSED" != "true" ]; then
+            echo "❌ Delta coverage requirement failed."
+            echo "Current delta coverage: $DELTA_COVERAGE%"
+            echo "Required delta coverage: 60%"
+            exit 1
+          fi
+
+          if [ "$OVERALL_PASSED" != "true" ]; then
+            echo "❌ Overall coverage requirement failed."
+            echo "Current overall coverage: $OVERALL_COVERAGE%"
+            echo "Required overall coverage: 5%"
+            exit 1
+          fi
+
+          echo "✅ All coverage requirements passed."
 
 
   format:
@@ -218,8 +501,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-          cache: maven
+          java-version: '21'
 
       - name: Download Google Java Format
         run: |
@@ -234,6 +516,11 @@ jobs:
 
           files=$(find src test -name "*.java" \
             -not -path "*/target/*")
+
+          if [ -z "$files" ]; then
+            echo "❌ No Java files found."
+            exit 1
+          fi
 
           for file in $files
           do
