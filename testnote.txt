@@ -1,0 +1,103 @@
+📝 JUnit Test — Basic Notes
+1. JUnit kya hai?
+
+JUnit Java mein code ko automatically test karne ke liye testing framework hai.
+
+2. @Test
+@Test
+
+JUnit ko batata hai ki ye method ek test method hai aur ise test ke time run karna hai.
+
+Iske liye import:
+
+import org.junit.jupiter.api.Test;
+
+jupiter → JUnit 5
+api → JUnit ka public testing API
+Test → @Test annotation
+
+3. Test ka basic structure
+
+Test ko generally 3 parts mein divide karte hain:
+
+Arrange → Act → Assert
+
+Arrange: Test ke liye input/expected result ready karo.
+
+Act: Jis method ko test karna hai usko call karo.
+
+Assert: Actual result aur expected result compare karo.
+
+4. Basic example
+
+Agar method:
+
+int add(int a, int b)
+
+hai, toh test:
+
+@Test
+void addTest() {
+
+    // Arrange
+    int a = 2;
+    int b = 3;
+    int expected = 5;
+
+    // Act
+    int actual = add(a, b);
+
+    // Assert
+    assertEquals(expected, actual);
+}
+5. Assertions
+
+Assertions ka kaam hai expected aur actual result ko check karna.
+
+assertEquals(expected, actual);
+
+→ Dono equal hain?
+
+assertArrayEquals(expected, actual);
+
+→ Dono arrays equal hain?
+
+assertTrue(condition);
+
+→ Condition true hai?
+
+assertFalse(condition);
+
+→ Condition false hai?
+
+6. Assertion ka import
+
+Example:
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+Array ke liye:
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+7. Two Sum mein
+
+Tumhara method:
+
+public static int[] twoSum(int[] nums, int target)
+
+Test mein:
+
+Arrange
+↓
+nums + target + expected array
+
+Act
+↓
+twoSum() call → actual array
+
+Assert
+↓
+assertArrayEquals(expected, actual)
+⭐ Golden rule
+ARRANGE → kya input dena hai?
+ACT      → kya method call karna hai?
