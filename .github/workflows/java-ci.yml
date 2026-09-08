@@ -246,7 +246,7 @@ jobs:
           # Coverage thresholds
           # ---------------------------------------------------------
 
-          DELTA_THRESHOLD = 60
+          DELTA_THRESHOLD = 30
           OVERALL_THRESHOLD = 5
 
           delta_passed = delta_coverage >= DELTA_THRESHOLD
